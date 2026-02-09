@@ -3,7 +3,6 @@ import torch
 
 import torch_geometric.typing
 from torch_geometric.nn import GPSConv, SAGEConv
-from torch_geometric.nn.attention import BigBirdAttention
 from torch_geometric.typing import SparseTensor
 from torch_geometric.utils import to_torch_csc_tensor
 
@@ -18,13 +17,6 @@ def test_gps_conv(norm, attn_type):
 
     conv = GPSConv(16, conv=SAGEConv(16, 16), heads=4, norm=norm,
                    attn_type=attn_type)
-
-    # BigBird attention depends on blocksize.
-    # The default value of 64 is too large for this test.
-    # Hence, we set it to 1 and assuming no random blocks.
-    if conv.attn_type == 'bigbird':
-        conv.attn = BigBirdAttention(channels=16, n_heads=4, block_size=1,
-                                     num_rand_blocks=1)
 
     conv.reset_parameters()
     assert str(conv) == (f'GPSConv(16, conv=SAGEConv(16, 16, aggr=mean), '

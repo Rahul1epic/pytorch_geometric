@@ -82,17 +82,17 @@ def build_rand_attention(seq_length: int, block_size: int, num_heads: int,
     rand_attn = [torch.zeros(n_blocks, rand_size) for _ in range(num_heads)]
 
     for exp_idx in range(max_idx + 1):
-        rand_r_cnt = 0
+        rnd_r_cnt = 0
         if exp_idx > 0:
             if expected_num_rand_blocks[exp_idx] > 0:
-                rand_r_cnt = sum(expected_num_rand_blocks[:exp_idx])
+                rnd_r_cnt = sum(expected_num_rand_blocks[:exp_idx])
                 curr_r_cnt = sum(expected_num_rand_blocks[:exp_idx + 1])
                 for block_row_idx in range(global_top,
                                            blocks_per_region[exp_idx - 1]):
                     for head in range(num_heads):
                         rand_attn[head][
                             block_row_idx,
-                            rand_r_cnt:curr_r_cnt] = get_random_attn_per_block(
+                            rnd_r_cnt:curr_r_cnt] = get_random_attn_per_block(
                                 block_idx=block_row_idx,
                                 start_idx=blocks_per_region[exp_idx - 1],
                                 end_idx=blocks_per_region[exp_idx],
@@ -107,17 +107,17 @@ def build_rand_attention(seq_length: int, block_size: int, num_heads: int,
                     continue
                 for block_row_idx in range(blocks_per_region[exp_idx - 1],
                                            blocks_per_region[exp_idx]):
-                    rand_r_cnt = 0
+                    rnd_r_cnt = 0
                     start_idx = 0
                     if idx > 0:
-                        rand_r_cnt = sum(expected_num_rand_blocks[:idx])
+                        rnd_r_cnt = sum(expected_num_rand_blocks[:idx])
                         start_idx = blocks_per_region[idx - 1]
                     curr_r_cnt = sum(expected_num_rand_blocks[:idx + 1])
 
                     for head in range(num_heads):
                         rand_attn[head][
                             block_row_idx,
-                            rand_r_cnt:curr_r_cnt] = get_random_attn_per_block(
+                            rnd_r_cnt:curr_r_cnt] = get_random_attn_per_block(
                                 block_idx=block_row_idx, start_idx=start_idx,
                                 end_idx=blocks_per_region[idx],
                                 num_rand_blocks=expected_num_rand_blocks[idx],
@@ -133,7 +133,7 @@ def build_rand_attention(seq_length: int, block_size: int, num_heads: int,
         kv_start_id = 0
 
         if exp_idx > 0:
-            rand_r_cnt = sum(expected_num_rand_blocks[:exp_idx])
+            rnd_r_cnt = sum(expected_num_rand_blocks[:exp_idx])
             q_start_id = blocks_per_region[exp_idx - 1]
             kv_start_id = blocks_per_region[exp_idx - 1]
 
@@ -141,7 +141,7 @@ def build_rand_attention(seq_length: int, block_size: int, num_heads: int,
             for head in range(num_heads):
                 rand_attn[head][
                     block_row_idx,
-                    rand_r_cnt:curr_r_cnt] = get_random_attn_per_block(
+                    rnd_r_cnt:curr_r_cnt] = get_random_attn_per_block(
                         block_idx=block_row_idx, start_idx=kv_start_id,
                         end_idx=blocks_per_region[exp_idx],
                         num_rand_blocks=expected_num_rand_blocks[exp_idx],
@@ -495,29 +495,44 @@ class BigBirdAttention(torch.nn.Module):
                                         bias=attn_out_bias)
 
         self.dropout = torch.nn.Dropout(dropout)
+        self.is_sparse = True
+        self.pad_len = 0
 
     def forward(self, x, mask: Optional[Tensor] = None):
         B, N, _ = x.shape
-        q = self.q(x)
-        k = self.k(x)
-        v = self.v(x)
+        # print("Sequence Length: ", N)
 
-        assert q.size(1) >= self.block_size, \
-            "seq_length should be more than block_size"
-        assert k.size(1) >= self.block_size, \
-            "seq_length should be more than block_size"
-        assert v.size(1) >= self.block_size, \
-            "seq_length should be more than block_size"
+        if N <= (2 * self.num_rand_blocks + 5) * self.block_size:
+            # If sequence length is too small, perform dense attention
+            warnings.warn(
+                f"""Sequence length does not satisfy the condition:
+                    seq_length > (5 + 2*num_rand_blocks) * block_size.
+                    Got seq_length={N},
+                    num_rand_blocks={self.num_rand_blocks},
+                    block_size={self.block_size}.
+                    Falling back to dense attention""", stacklevel=2)
 
-        q, k, v = map(
-            lambda t: t.reshape(B, N, self.n_heads, self.head_dim).permute(
-                0, 2, 1, 3), (q, k, v))
+            self.is_sparse = False
 
-        if mask is not None:
-            q_mask = mask[:, None, :, None]
-            kv_mask = mask[:, None, None, :]
+        else:
+            # Pad if sequence length is not a multiple of block size
+            if N % self.block_size != 0:
+                warnings.warn(
+                    """Padding sequence to make it a
+                                 multiple of block size.""", stacklevel=2)
 
-            if (q.size(2) // self.block_size) > 2 * self.num_rand_blocks + 5:
+                self.pad_len = ((self.block_size - (N % self.block_size)) %
+                                self.block_size)
+                x = torch.nn.functional.pad(x, (0, 0, 0, self.pad_len),
+                                            value=0)
+                mask = torch.nn.functional.pad(mask, (0, self.pad_len),
+                                               value=False)
+                N = N + self.pad_len
+
+            if mask is not None:
+                q_mask = mask[:, None, :, None]
+                kv_mask = mask[:, None, None, :]
+
                 q_block_mask = torch.reshape(
                     mask, (B, N // self.block_size, self.block_size))
                 kv_block_mask = torch.reshape(
@@ -532,23 +547,29 @@ class BigBirdAttention(torch.nn.Module):
                     expected_q_block_lengths=exp_block_lengths,
                     expected_num_rand_blocks=exp_n_rand_blocks)
 
-        if (q.size(2) // self.block_size) <= 2 * self.num_rand_blocks + 5:
-            # If sequence length is too small, perform dense attention
-            warnings.warn(
-                "Sequence length is too small for BigBird sparse"
-                " attention. Falling back to dense attention. "
-                " Consider reducing block_size or num_rand_blocks"
-                " or have larger sequence lengths.", stacklevel=2)
+        q = self.q(x)
+        k = self.k(x)
+        v = self.v(x)
 
-            out = scaled_dot_product_attention(q, k, v, attn_mask=mask)
-        else:
+        q, k, v = map(
+            lambda t: t.reshape(B, N, self.n_heads, self.head_dim).permute(
+                0, 2, 1, 3), (q, k, v))
+
+        if self.is_sparse:
             out = bigbird_sparse_attention(
                 query=q, key=k, value=v, q_mask=q_mask, kv_mask=kv_mask,
                 q_block_mask=q_block_mask, kv_block_mask=kv_block_mask,
                 band_mask=band_mask, random_attn=random_attn,
                 q_block_size=self.block_size, kv_block_size=self.block_size)
+        else:
+            out = scaled_dot_product_attention(q, k, v, attn_mask=mask)
 
         out = out.reshape(B, N, -1)
+
+        # Unpad padded tokens
+        if self.pad_len > 0:
+            out = out[:, :N - self.pad_len, :]
+
         out = self.attn_out(out)
         out = self.dropout(out)
         return out
