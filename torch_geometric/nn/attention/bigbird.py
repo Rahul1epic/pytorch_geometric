@@ -194,7 +194,8 @@ def create_band_mask(q_block_mask, kv_block_mask):
 
     Returns:
         band_mask (Tensor): Mask for band attention
-            [batch_size, 1, q_seq_length//q_block_size-4, 3*kv_block_size]
+            [batch_size, 1, q_seq_length//q_block_size-4, q_block_size,
+             3*kv_block_size]
     """
     expanded_kv_pad = torch.cat(
         (kv_block_mask[:, 1:-3], kv_block_mask[:, 2:-2], kv_block_mask[:,
@@ -203,7 +204,7 @@ def create_band_mask(q_block_mask, kv_block_mask):
 
     band_mask = torch.einsum('blq,blk->blqk', q_block_mask[:, 2:-2],
                              expanded_kv_pad)
-    band_mask.unsqueeze(1)
+    band_mask.unsqueeze_(1)
     return band_mask
 
 
@@ -269,7 +270,7 @@ def bigbird_sparse_attention(
             [batch_size, 1, 1, kv_seq_length]
         band_mask (Tensor): Mask for band attention of shape
             [batch_size, 1, q_seq_length//q_block_size-4,
-            3*kv_block_size]
+            q_block_size, 3*kv_block_size]
         q_block_mask (Tensor): Mask for query blocks of shape
             [batch_size, q_seq_length//q_block_size, q_block_size]
         kv_block_mask (Tensor): Mask for key/value blocks of shape
@@ -558,12 +559,14 @@ class BigBirdAttention(torch.nn.Module):
                 0, 2, 1, 3), (q, k, v))
 
         if is_sparse:
+            # print("Using sparse")
             out = bigbird_sparse_attention(
                 query=q, key=k, value=v, q_mask=q_mask, kv_mask=kv_mask,
                 q_block_mask=q_block_mask, kv_block_mask=kv_block_mask,
                 band_mask=band_mask, random_attn=random_attn,
                 q_block_size=self.block_size, kv_block_size=self.block_size)
         else:
+            # print("Using Dense")
             attn_mask = mask[:, None, None, :].bool()
             out = scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
