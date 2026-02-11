@@ -501,6 +501,7 @@ class BigBirdAttention(torch.nn.Module):
     def forward(self, x, mask: Optional[Tensor] = None):
         B, N, _ = x.shape
         # print("Sequence Length: ", N)
+        is_sparse = True
 
         if N <= (2 * self.num_rand_blocks + 5) * self.block_size:
             # If sequence length is too small, perform dense attention
@@ -512,10 +513,10 @@ class BigBirdAttention(torch.nn.Module):
                     block_size={self.block_size}.
                     Falling back to dense attention""", stacklevel=2)
 
-            self.is_sparse = False
+            is_sparse = False
 
         else:
-            self.is_sparse = True
+            is_sparse = True
             # Pad if sequence length is not a multiple of block size
             if N % self.block_size != 0:
                 warnings.warn(
@@ -556,7 +557,7 @@ class BigBirdAttention(torch.nn.Module):
             lambda t: t.reshape(B, N, self.n_heads, self.head_dim).permute(
                 0, 2, 1, 3), (q, k, v))
 
-        if self.is_sparse:
+        if is_sparse:
             out = bigbird_sparse_attention(
                 query=q, key=k, value=v, q_mask=q_mask, kv_mask=kv_mask,
                 q_block_mask=q_block_mask, kv_block_mask=kv_block_mask,
