@@ -562,7 +562,8 @@ class BigBirdAttention(torch.nn.Module):
                 band_mask=band_mask, random_attn=random_attn,
                 q_block_size=self.block_size, kv_block_size=self.block_size)
         else:
-            out = scaled_dot_product_attention(q, k, v, attn_mask=mask)
+            attn_mask = mask[:, None, None, :].bool()
+            out = scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
         out = out.reshape(B, N, -1)
 
