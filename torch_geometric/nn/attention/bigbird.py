@@ -515,6 +515,7 @@ class BigBirdAttention(torch.nn.Module):
             self.is_sparse = False
 
         else:
+            self.is_sparse = True
             # Pad if sequence length is not a multiple of block size
             if N % self.block_size != 0:
                 warnings.warn(
